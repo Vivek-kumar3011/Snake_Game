@@ -1,0 +1,207 @@
+#include <stdio.h>                          
+#include <stdlib.h>                          
+#include <time.h> 
+
+#ifdef _WIN32 //for Windows
+#include <conio.h>        // Console I/O for Windows
+#include <windows.h>      // Windows-specific functions like:curser control,key control
+
+#else //for Unix/Linux
+#include <unistd.h>       // For sleep on Unix/Linux
+#include <termios.h>      // Terminal control for Unix/Linux
+#include <fcntl.h>        // File control options for Unix/Linux
+#endif
+
+#define WIDTH 25          // width of game board
+#define HEIGHT 10         // height of game board 
+
+// Snake body block
+typedef struct SnakeNode {
+    int x, y;             // Coordinates of the segment
+    struct SnakeNode* next;   // Pointer to next segment
+} SnakeNode;
+
+// Motion directions
+typedef enum { UP, DOWN, LEFT, RIGHT } Direction;   // Enumaration fxn for direction states
+
+// Speed level
+int speed = 1000;        // Global speed variable
+
+// Delay for portability
+void sleep_ms(int milliseconds) {
+#ifdef _WIN32
+    Sleep(milliseconds);           // Windows sleep in milliseconds
+#else
+    usleep(milliseconds * 1000);  // Unix sleep in microseconds
+#endif
+}
+
+// Wipe terminal screen
+void clear_screen() {
+#ifdef _WIN32
+    system("cls");         // Clear command for Windows
+#else
+    system("clear");       // Clear command for Unix/Linux
+#endif
+}
+
+// Non-blocking key detection
+char get_input() {
+#ifdef _WIN32
+    if (_kbhit()) return _getch();     // Get key press on Windows
+    return 0;
+#else
+    struct termios oldt, newt;              // Terminal settings structures
+    char ch;                                 // Character to return
+    int oldf;                                // Original file status
+
+    tcgetattr(0, &oldt);                    // Get current terminal settings
+    newt = oldt;                             // Copy to modify
+    newt.c_lflag &= ~(ICANON | ECHO);       // Disable buffering and echo
+    newt.c_cc[VMIN] = 0;                    // No waiting for input
+    newt.c_cc[VTIME] = 1;                   // Timeout for input
+    tcsetattr(0, TCSANOW, &newt);           // Apply new settings
+    oldf = fcntl(0, F_GETFL, 0);            // Get current file status flags
+    fcntl(0, F_SETFL, oldf | O_NONBLOCK);   // Set non-blocking mode
+
+    ch = getchar();                         // Read character
+
+    tcsetattr(0, TCSANOW, &oldt);           // Restore original terminal settings
+    fcntl(0, F_SETFL, oldf);                // Restore file status flags
+
+    return ch;                              // Return read character
+#endif
+}
+
+// Memory allocation for snake
+SnakeNode* create_node(int x, int y) {
+    SnakeNode* node = (SnakeNode*)malloc(sizeof(SnakeNode)); 
+    node->x = x;          // Set x-coordinate
+    node->y = y;          // Set y-coordinate
+    node->next = NULL;    // No next node initially
+    return node;                        
+}
+
+// Push new head
+void add_snake_head(SnakeNode** head, int x, int y) {
+    SnakeNode* new_node = create_node(x, y); // Create new head node
+    new_node->next = *head;                 // Point new node to current head
+    *head = new_node;                       // Update head to new node
+}
+
+// Delete tail segment
+void remove_snake_tail(SnakeNode* head) {
+    if (!head || !head->next) return;       // Nothing to remove if only one node
+    while (head->next->next) head = head->next; // Move to second last node
+    free(head->next);                       // Free last node
+    head->next = NULL;                      // Set tail to null
+}
+
+// Visual presentation
+void display_board(SnakeNode* head, int food_x, int food_y, int score) {
+    clear_screen();                         // Clear previous frame
+
+    char board[HEIGHT][WIDTH];              // 2D array for game display
+    for (int i = 0; i < HEIGHT; i++)
+        for (int j = 0; j < WIDTH; j++)
+            board[i][j] = ' ';              // Initialize board with empty space
+
+    SnakeNode* current = head;              // Traverse snake
+    int is_head = 1;                        // Flag for snake head
+    while (current) {
+        if (is_head) board[current->y][current->x] = 'O'; // Snake head
+        else board[current->y][current->x] = '*';         // Snake body
+        is_head = 0;
+        current = current->next;
+    }
+
+    board[food_y][food_x] = '@';            // Place food on board
+
+    for (int i = 0; i < WIDTH + 2; i++) printf("#"); // Top border
+    printf("\n");
+    for (int i = 0; i < HEIGHT; i++) {
+        printf("#");                        // Left border
+        for (int j = 0; j < WIDTH; j++) {
+            printf("%c", board[i][j]);      // Print board content
+        }
+        printf("#\n");                      // Right border
+    }
+    for (int i = 0; i < WIDTH + 2; i++) printf("#"); // Bottom border
+    printf("\nScore: %d\n", score);         // Show score
+}
+// Head meets tail?
+int collision(SnakeNode* head) {
+    if (head->x < 0) head->x = WIDTH - 1;   // Wrap around left
+    if (head->x >= WIDTH) head->x = 0;      // Wrap around right
+    if (head->y < 0) head->y = HEIGHT - 1;  // Wrap around top
+    if (head->y >= HEIGHT) head->y = 0;     // Wrap around bottom
+
+    SnakeNode* current = head->next;        // Start from second node
+    while (current) {
+        if (head->x == current->x && head->y == current->y)
+            return 1;                       // Collision if same position
+        current = current->next;
+    }
+    return 0;                               // No collision
+}
+
+int main() {
+    srand(time(NULL));                      // Seed random with current time
+
+    while (1) {                              // Main game loop
+        SnakeNode* snake = create_node(WIDTH / 2, HEIGHT / 2); // Initialize snake
+        Direction dir = RIGHT;              // Start direction
+        int food_x = rand() % WIDTH;        // Random food x
+        int food_y = rand() % HEIGHT;       // Random food y
+        int score = 0;                      // Score counter
+        speed = 1000;                        // Initial speed
+
+        int game_over = 0;                  // Game state flag
+        while (!game_over) {                // Game loop
+            display_board(snake, food_x, food_y, score); // Show current frame
+
+            char input = get_input();       // Get user input
+            if (input == 'u' && dir != DOWN) dir = UP;     // Up
+            else if (input == 'd' && dir != UP) dir = DOWN; // Down
+            else if (input == 'l' && dir != RIGHT) dir = LEFT; // Left
+            else if (input == 'r' && dir != LEFT) dir = RIGHT; // Right
+            else if (input == '+' && speed > 100) speed -= 50; // Speed up
+            else if (input == '-' && speed < 1000) speed += 50; // Slow down
+
+            int new_x = snake->x;           // Determine new head x
+            int new_y = snake->y;           // Determine new head y
+            if (dir == UP) new_y--;
+            if (dir == DOWN) new_y++;
+            if (dir == LEFT) new_x--;
+            if (dir == RIGHT) new_x++;
+
+            add_snake_head(&snake, new_x, new_y); // Add new head
+
+            if (snake->x == food_x && snake->y == food_y) { // Check food
+                score++;                    // Increment score
+                if(score>=1){
+                  speed-=100;
+                }
+                food_x = rand() % WIDTH;    // New food x
+                food_y = rand() % HEIGHT;   // New food y
+            } else {
+                remove_snake_tail(snake);   // Remove tail if no food
+            }
+            
+            if (collision(snake)) {         // Collision check
+                display_board(snake, food_x, food_y, score); // Show final frame
+                printf("\nGame Over! Final Score: %d\n", score); // Game over msg
+                game_over = 1;              // End game
+            }
+
+            sleep_ms(speed);                // Delay next frame
+        }
+        printf("\nPlay Again? (y/n): ");     // Ask replay
+        char choice;
+        scanf(" %c", &choice);              // Get user choice
+        if (choice != 'y' && choice != 'Y') break; // Exit condition
+    }
+    return 0;                        
+}
+
+
